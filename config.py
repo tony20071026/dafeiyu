@@ -141,6 +141,10 @@ class Settings:
     meme_send_cooldown: float = 30.0
     meme_max_files: int = 200
     meme_catalog_limit: int = 12
+    web_fetch_enabled: bool = True
+    web_fetch_max_chars: int = 800
+    web_fetch_timeout: float = 8.0
+    web_fetch_max_bytes: int = 512 * 1024
     fixed_replies_enabled: bool = True
     log_level: str = "INFO"
     log_dir: Path = field(default_factory=lambda: BASE_DIR / "logs")
@@ -216,6 +220,17 @@ class Settings:
             ),
             meme_max_files=max(1, _env_int("MEME_MAX_FILES", 200)),
             meme_catalog_limit=max(1, _env_int("MEME_CATALOG_LIMIT", 12)),
+            web_fetch_enabled=_env_bool("WEB_FETCH_ENABLED", True),
+            web_fetch_max_chars=min(
+                4_000, max(0, _env_int("WEB_FETCH_MAX_CHARS", 800))
+            ),
+            web_fetch_timeout=min(
+                30.0, max(3.0, _env_float("WEB_FETCH_TIMEOUT", 8.0))
+            ),
+            web_fetch_max_bytes=min(
+                4 * 1024 * 1024,
+                max(16 * 1024, _env_int("WEB_FETCH_MAX_BYTES", 512 * 1024)),
+            ),
             fixed_replies_enabled=_env_bool("FIXED_REPLIES_ENABLED", True),
             log_level=_env("LOG_LEVEL", "INFO").upper() or "INFO",
         )

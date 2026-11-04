@@ -15,6 +15,7 @@ from handlers.message_handler import (
 from utils.ai import AIError, ImportanceDecision
 from utils.api import QQApiError
 from utils.context_window import ContextWindowManager
+from utils.web_fetch import WebPage
 
 
 class FakeApi:
@@ -660,6 +661,108 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         await handler.handle(_message("你好", scene="c2c"))
         self.assertEqual(ai.judge_calls, [])
         self.assertEqual(self.api.c2c_texts[-1][1], "这条值得聊")
+
+    async def test_direct_link_is_fetched_and_not_persisted(self) -> None:
+        class FakeAI:
+            def __init__(self) -> None:
+                self.contexts: list[str] = []
+
+            async def chat(self, context_text: str, *, images=()) -> str:
+                self.contexts.append(context_text)
+                return "看完了"
+
+        class FakeFetcher:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            async def fetch_for_text(self, text: str):
+                self.calls.append(text)
+                if "https://" not in text:
+                    return ()
+                return (
+                    WebPage(
+                        "https://example.com/a",
+                        title="标题",
+                        description="摘要",
+                        text="正文内容" * 40,
+                    ),
+                )
+
+        ai = FakeAI()
+        fetcher = FakeFetcher()
+        handler = MessageHandler(
+            self.settings,
+            self.api,
+            self.contexts,
+            ai,  # type: ignore[arg-type]
+            None,
+            fetcher,  # type: ignore[arg-type]
+        )
+        await handler.handle(
+            _message("看看这个 https://example.com/a", mentioned=True)
+        )
+        self.assertEqual(fetcher.calls, ["看看这个 https://example.com/a"])
+        self.assertIn("【网页内容】", ai.contexts[-1])
+        self.assertIn("正文内容", ai.contexts[-1])
+
+        await handler.handle(_message("说得好", mentioned=True))
+        self.assertNotIn("【网页内容】", ai.contexts[-1])
+
+    async def test_ambient_group_link_is_not_fetched(self) -> None:
+        class FakeAI:
+            def __init__(self) -> None:
+                self.contexts: list[str] = []
+
+            async def judge(
+                self, context_text: str, message_text: str, *, sender_name=""
+            ) -> ImportanceDecision:
+                return ImportanceDecision(True, 90, "测试")
+
+            async def chat(self, context_text: str, *, images=()) -> str:
+                self.contexts.append(context_text)
+                return "嗯"
+
+        class FakeFetcher:
+            def __init__(self) -> None:
+                self.calls: list[str] = []
+
+            async def fetch_for_text(self, text: str):
+                self.calls.append(text)
+                return ()
+
+        ai = FakeAI()
+        fetcher = FakeFetcher()
+        handler = MessageHandler(
+            self.settings,
+            self.api,
+            self.contexts,
+            ai,  # type: ignore[arg-type]
+            None,
+            fetcher,  # type: ignore[arg-type]
+        )
+        await handler.handle(_message("https://example.com/a"))
+        self.assertEqual(fetcher.calls, [])
+        self.assertEqual(len(ai.contexts), 1)
+
+    async def test_bare_article_url_reaches_ai(self) -> None:
+        class FakeAI:
+            def __init__(self) -> None:
+                self.contexts: list[str] = []
+
+            async def chat(self, context_text: str, *, images=()) -> str:
+                self.contexts.append(context_text)
+                return "读完了"
+
+        ai = FakeAI()
+        handler = MessageHandler(
+            self.settings, self.api, self.contexts, ai  # type: ignore[arg-type]
+        )
+        await handler.handle(
+            _message("https://example.com/article", scene="c2c")
+        )
+        self.assertEqual(self.api.c2c_images, [])
+        self.assertEqual(self.api.c2c_texts[-1][1], "读完了")
+        self.assertIn("https://example.com/article", ai.contexts[-1])
 
 
 class GatewayEventParsingTests(unittest.IsolatedAsyncioTestCase):

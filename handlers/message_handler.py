@@ -30,6 +30,7 @@ from utils.context_window import (
 )
 from utils.memes import MemeLibrary
 from utils.text import is_http_url, truncate_text
+from utils.web_fetch import WebFetcher, looks_like_image_url, render_pages
 
 LOGGER = logging.getLogger(__name__)
 
@@ -172,12 +173,14 @@ class MessageHandler:
         contexts: ContextWindowManager,
         ai_client: AIClient | None = None,
         meme_library: MemeLibrary | None = None,
+        web_fetcher: WebFetcher | None = None,
     ) -> None:
         self._settings = settings
         self._api = api
         self._contexts = contexts
         self._ai = ai_client
         self._meme_library = meme_library
+        self._web_fetcher = web_fetcher
         self._last_group_reply: dict[str, float] = {}
         self._last_meme_sent: dict[str, float] = {}
         self._group_silence: dict[str, int] = {}
@@ -457,7 +460,8 @@ class MessageHandler:
             return
 
         # Also accept a bare public image URL, e.g. "@大肥鱼 https://.../a.png".
-        if is_http_url(normalized):
+        # Non-image links fall through to the AI so the page can be read.
+        if is_http_url(normalized) and looks_like_image_url(normalized):
             await self._send_network_image(message, normalized)
             return
 
@@ -836,7 +840,8 @@ class MessageHandler:
             "@我 + 闭嘴 — 十分钟内不再回复\n"
             "@我 + 允许说话 — 解除闭嘴\n"
             "也可以直接说“发个表情包看看”\n"
-            "/image <图片URL> 或 /img — 发送网络图片（也可直接发图片 URL）\n"
+            "/image <图片URL> 或 /img — 发送网络图片（也可直接发 .png/.jpg 等图片链接）\n"
+            "直接发网页链接并 @ 我 — 大肥鱼能读网页正文\n"
             "直接发图片并 @ 我 — 大肥鱼能看图\n"
             "/context — 查看当前上下文窗口\n"
             f"/context 5000|1w|5w — 调整窗口（{context_options_label()}）\n"
@@ -888,6 +893,12 @@ class MessageHandler:
             return
         images = self._images_for_reply(message)
         meme_catalog = await self._meme_catalog_for(message, context_text)
+        if self._web_fetcher is not None and self._should_read_links(message):
+            link_context = await self._link_context(message)
+            if link_context:
+                # Temporary: this block is sent with this reply only and is
+                # never appended to the stored conversation history.
+                context_text = f"{context_text}\n\n{link_context}"
         LOGGER.info(
             "请求 AI | model=%s | scene=%s | context=%s 字 | images=%s | memes=%s",
             self._settings.ai_model,
@@ -919,6 +930,51 @@ class MessageHandler:
             reply[:200].replace("\n", " "),
         )
         await self._send_ai_output(message, reply)
+
+    def _should_read_links(self, message: IncomingMessage) -> bool:
+        """Only read pages for direct interactions, never for ambient links."""
+
+        if message.scene != "group":
+            return True
+        if message.mentioned:
+            return True
+        return bool(message.quoted_author) and (
+            message.quoted_author.strip() == self._settings.bot_name
+        )
+
+    async def _link_context(self, message: IncomingMessage) -> str:
+        if self._web_fetcher is None:
+            return ""
+        source = "\n".join(
+            part
+            for part in (message.content, message.quoted_content)
+            if part
+        )
+        if not source:
+            return ""
+        try:
+            pages = await self._web_fetcher.fetch_for_text(source)
+        except Exception:
+            LOGGER.exception(
+                "读取网页失败 | %s", message.conversation_id
+            )
+            return ""
+        if not pages:
+            return ""
+        block = render_pages(pages, self._settings.web_fetch_max_chars)
+        if not block:
+            return ""
+        LOGGER.info(
+            "已读取网页 | %s | %s | 附加 %s 字",
+            message.conversation_id,
+            pages[0].url[:120],
+            len(block),
+        )
+        return (
+            f"{block}\n"
+            "（以上是网页正文摘录。回答时优先依据摘录；"
+            "摘录没有覆盖的部分不要编造，可以直说没看到。）"
+        )
 
     async def _save_meme(self, message: IncomingMessage, alias: str) -> None:
         """Save the current/quoted image under a user-provided name."""

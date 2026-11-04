@@ -22,6 +22,7 @@ from utils.context_window import ContextWindowManager
 from utils.gateway import QQGatewayClient
 from utils.logging_setup import setup_logging
 from utils.memes import MemeLibrary
+from utils.web_fetch import WebFetcher
 
 LOGGER = logging.getLogger("dafeiyu")
 
@@ -193,8 +194,28 @@ async def _run(settings: Settings, stop_event: asyncio.Event) -> int:
             meme_library.analyze_pending(), name="meme-index"
         )
 
+        web_fetcher: WebFetcher | None = None
+        if (
+            settings.web_fetch_enabled
+            and settings.web_fetch_max_chars > 0
+            and ai_client is not None
+        ):
+            web_fetcher = WebFetcher(settings, session)
+            LOGGER.info(
+                "网页读取：开启（仅 @/私聊/引用机器人时；单次最多 1 个链接，"
+                "正文 %s 字）",
+                settings.web_fetch_max_chars,
+            )
+        else:
+            LOGGER.info("网页读取：关闭")
+
         handler = MessageHandler(
-            settings, api, contexts, ai_client, meme_library
+            settings,
+            api,
+            contexts,
+            ai_client,
+            meme_library,
+            web_fetcher,
         )
         water_task: asyncio.Task[None] | None = None
         if settings.group_water_hours > 0:
