@@ -61,6 +61,17 @@ class ApiPayloadTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(message[2]["msg_id"], "MSG")
         self.assertEqual(message[2]["media"]["file_info"], "FILE-INFO")
 
+    async def test_group_proactive_image_omits_passive_fields(self) -> None:
+        await self.api.send_group_image(
+            "GROUP", "https://example.com/a.png", ""
+        )
+        _, path, body = self.calls[1]
+        self.assertTrue(path.endswith("/v2/groups/GROUP/messages"))
+        self.assertEqual(body["msg_type"], 7)
+        self.assertEqual(body["media"]["file_info"], "FILE-INFO")
+        self.assertNotIn("msg_id", body)
+        self.assertNotIn("msg_seq", body)
+
     async def test_channel_url_image_carries_msg_id(self) -> None:
         await self.api.send_channel_image(
             "CHANNEL", "https://example.com/a.png", "MSG"

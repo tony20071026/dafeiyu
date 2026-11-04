@@ -196,12 +196,14 @@ class QQApiClient:
         file_info = payload.get("file_info")
         if not file_info:
             raise QQApiError("群图片上传成功但响应缺少 file_info", path="/v2/groups/files")
-        body = {
+        body: dict[str, Any] = {
             "msg_type": 7,
-            "msg_id": message_id,
-            "msg_seq": await self._next_seq(message_id),
             "media": {"file_info": file_info},
         }
+        # An empty message_id means a proactive message: omit passive fields.
+        if message_id:
+            body["msg_id"] = message_id
+            body["msg_seq"] = await self._next_seq(message_id)
         return await self._request(
             "POST", f"/v2/groups/{quote(group_openid, safe='')}/messages", json_body=body
         )
