@@ -486,3 +486,9 @@ python -m compileall -q .
 - **群图片没有进表情包库**：检查图片是否超过 `MAX_LOCAL_IMAGE_MB`、格式是否为群聊可发送的 png/jpg，以及 `MEME_AUTO_COLLECT` 是否为 `true`；日志会记录“新表情包已入库”或“识别为截图/二维码等，跳过”。
 - **表情包不主动发**：确认 `MEME_SEND_ENABLED=true`、`data/memes.json` 里已有描述，且当前话题与标签匹配；也可以直接用 `/表情包` 手动发一张。
 - **Token 接口差异**：官方文档目前同时存在 `bots.qq.com` 与 `api.bot.qq.com` 两个域名，本项目按需求优先使用前者，失败后自动回退。
+
+## 许可证
+
+本项目使用 [GNU General Public License v3.0](LICENSE)（GPL-3.0）许可协议。
+
+Copyright (C) 2026 tony20071026
