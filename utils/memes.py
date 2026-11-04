@@ -81,6 +81,9 @@ class MemeEntry:
     mtime: float = 0.0
     description: str = ""
     tags: tuple[str, ...] = ()
+    emotion: str = ""
+    use_when: tuple[str, ...] = ()
+    risk: str = "low"
     added_at: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -90,6 +93,9 @@ class MemeEntry:
             "mtime": self.mtime,
             "description": self.description,
             "tags": list(self.tags),
+            "emotion": self.emotion,
+            "use_when": list(self.use_when),
+            "risk": self.risk,
             "added_at": self.added_at,
         }
 
@@ -98,6 +104,12 @@ class MemeEntry:
         tags = data.get("tags")
         if not isinstance(tags, list):
             tags = []
+        use_when = data.get("use_when")
+        if not isinstance(use_when, list):
+            use_when = []
+        risk = str(data.get("risk") or "low").strip().lower()
+        if risk not in {"low", "medium", "high"}:
+            risk = "low"
         return cls(
             filename=filename,
             sha256=str(data.get("sha256") or ""),
@@ -105,6 +117,13 @@ class MemeEntry:
             mtime=_safe_float(data.get("mtime")),
             description=str(data.get("description") or "").strip(),
             tags=tuple(str(tag).strip() for tag in tags if str(tag).strip()),
+            emotion=str(data.get("emotion") or "").strip()[:12],
+            use_when=tuple(
+                str(phrase).strip()[:24]
+                for phrase in use_when
+                if str(phrase).strip()
+            ),
+            risk=risk,
             added_at=_safe_float(data.get("added_at")),
         )
 
@@ -471,6 +490,9 @@ class MemeLibrary:
                     continue
                 current.description = description
                 current.tags = tags
+                current.emotion = caption.emotion
+                current.use_when = caption.use_when
+                current.risk = caption.risk
                 await self._save_locked()
             LOGGER.info(
                 "表情包已识别 %s | %s | 标签=%s",
@@ -733,6 +755,9 @@ class MemeLibrary:
                     if current is not None:
                         current.description = description
                         current.tags = tags
+                        current.emotion = caption.emotion
+                        current.use_when = caption.use_when
+                        current.risk = caption.risk
                         await self._save_locked()
                 LOGGER.info(
                     "新表情包已识别 %s | %s | 标签=%s",
@@ -795,6 +820,11 @@ class MemeLibrary:
                     score += 6
                 elif needle in tag_lower:
                     score += 3
+            if entry.emotion and needle in entry.emotion.lower():
+                score += 5
+            for phrase in entry.use_when:
+                if needle in phrase.lower():
+                    score += 3
             if score > 0:
                 scored.append((score, entry))
         scored.sort(key=lambda item: (-item[0], -item[1].added_at))
@@ -828,6 +858,16 @@ class MemeLibrary:
                 tag_lower = tag.lower().strip()
                 if len(tag_lower) >= 2 and tag_lower in lowered:
                     score += 3
+            emotion = entry.emotion.lower().strip()
+            if len(emotion) >= 2 and emotion in lowered:
+                score += 5
+            for phrase in entry.use_when:
+                for token in re.split(
+                    r"[\s，。！？、,.!?；;：:（）()\[\]【】/|]+", phrase
+                ):
+                    token = token.strip().lower()
+                    if 2 <= len(token) <= 8 and token in lowered:
+                        score += 2
             for token in re.split(r"[\s，。！？、,.!?；;：:（）()\[\]【】/|]+", entry.description):
                 token = token.strip().lower()
                 if 2 <= len(token) <= 8 and token in lowered:
@@ -853,5 +893,17 @@ class MemeLibrary:
         for entry in entries:
             tags = "、".join(entry.tags[:5]) or "-"
             description = entry.description.replace("\n", " ")[:60]
-            lines.append(f"- {entry.filename}：{description}（标签：{tags}）")
+            meta: list[str] = []
+            if entry.emotion:
+                meta.append(f"情绪：{entry.emotion}")
+            if entry.use_when:
+                meta.append("适合：" + "、".join(entry.use_when[:3]))
+            if entry.risk == "medium":
+                meta.append("风险：中")
+            elif entry.risk == "high":
+                meta.append("风险：高，慎用")
+            meta.append(f"标签：{tags}")
+            lines.append(
+                f"- {entry.filename}：{description}（{'；'.join(meta)}）"
+            )
         return "\n".join(lines)

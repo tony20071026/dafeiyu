@@ -11,7 +11,11 @@ from aiohttp import web
 from PIL import Image
 
 from config import Settings
-from utils.ai import AIClient, _parse_meme_caption
+from utils.ai import (
+    AIClient,
+    _parse_meme_caption,
+    build_member_alias_directive,
+)
 
 
 class AIClientTests(unittest.IsolatedAsyncioTestCase):
@@ -422,11 +426,47 @@ class MemeCaptionParserTests(unittest.TestCase):
         self.assertEqual(caption.description, "一盘三文鱼刺身")
         self.assertEqual(caption.tags, ("食物", "三文鱼"))
 
+    def test_parses_emotion_scene_and_risk(self) -> None:
+        caption = _parse_meme_caption(
+            '{"is_meme": true, "emotion": "无语", '
+            '"use_when": ["改 bug 改到崩溃", "周一上班"], '
+            '"risk": "high", "description": "湿发呆滞男生", '
+            '"tags": ["无语", "心累"]}'
+        )
+        self.assertTrue(caption.is_meme)
+        self.assertEqual(caption.emotion, "无语")
+        self.assertEqual(caption.use_when, ("改 bug 改到崩溃", "周一上班"))
+        self.assertEqual(caption.risk, "high")
+
     def test_missing_verdict_defaults_to_meme(self) -> None:
         caption = _parse_meme_caption(
             '{"description": "夸张的搞笑表情", "tags": ["搞笑"]}'
         )
         self.assertTrue(caption.is_meme)
+        self.assertEqual(caption.emotion, "")
+        self.assertEqual(caption.use_when, ())
+        self.assertEqual(caption.risk, "low")
+
+    def test_member_alias_directive_prefers_real_names(self) -> None:
+        directive = build_member_alias_directive({"李": "李小明"})
+        self.assertIn("优先使用已知真名", directive)
+        self.assertIn("李 -> 李小明", directive)
+        self.assertEqual(build_member_alias_directive({}), "")
+
+
+class MemberAliasPromptTests(unittest.TestCase):
+    def test_alias_file_is_added_to_system_prompt(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data_dir = Path(temp)
+            (data_dir / "member_aliases.json").write_text(
+                '{"aliases": {"李": "李小明"}}', encoding="utf-8"
+            )
+            settings = Settings(
+                app_id="app", app_secret="secret", data_dir=data_dir
+            )
+            client = AIClient(settings, None)  # type: ignore[arg-type]
+            self.assertIn("李 -> 李小明", client._system_prompt)
+            self.assertIn("优先使用已知真名", client._system_prompt)
 
 
 if __name__ == "__main__":

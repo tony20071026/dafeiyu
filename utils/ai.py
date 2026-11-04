@@ -51,30 +51,73 @@ JUDGE_SYSTEM_PROMPT = (
 
 MEME_CAPTION_PROMPT = (
     "你是表情包审核员和标注器。先判断图片是否适合在群聊里当表情包使用，"
-    "再用简短中文描述画面和情绪，并给出检索标签。\n"
+    "再用简短中文描述画面和情绪，并给出检索标签、主要情绪、适用场景和风险等级。\n"
     "适合当表情包（is_meme=true）：带文字/梗、夸张表情、搞笑动作、反应图、"
     "卡通形象，能在聊天中表达情绪、吐槽或接梗。\n"
     "不适合（is_meme=false）：普通食物照、饮料照、风景照、普通自拍、商品图、"
     "聊天截图、二维码、文档、表格、证件、屏幕截图、模糊或无意义的图片。\n"
-    "注意：单纯拍一盘菜、一张自拍或一张风景，即使画面清楚也不是表情包；"
-    "只有带明显玩梗、文字或夸张情绪时才适合。\n"
+    "emotion 用 2-6 个字，如：开心、无语、震惊、嘲讽、期待、围观、心累、"
+    "温柔、危险、其他。\n"
+    "use_when 给 2-4 个具体使用场景，每条不超过 12 个字。\n"
+    "risk 取值 low / medium / high：竖中指、冒犯、危险动作或容易引战的图用 high，"
+    "普通搞笑图用 low。\n"
     "只输出一行 JSON，不要 markdown，不要解释：\n"
-    '{"is_meme": true, "description": "不超过30字的画面描述", '
-    '"tags": ["3-6个中文关键词"]}'
+    '{"is_meme": true, "emotion": "无语", '
+    '"use_when": ["改 bug 改到崩溃", "周一上班"], "risk": "low", '
+    '"description": "不超过30字的画面描述", "tags": ["3-6个中文关键词"]}'
 )
 
 MEME_SELECTION_RULES = (
     "【表情包】\n"
-    "你可以在回复里偶尔附带一张表情包。当前可选：\n"
+    "表情包是群聊气氛的一部分。先看当前情绪/场景，再看候选：\n"
     "{catalog}\n"
-    "只有当话题和某张表情包明显相关、发出来自然时才使用，最多一张。\n"
-    "需要时在回复最后单独加一行：[MEME:文件名]\n"
-    "不要解释这个标记，不要编造列表之外的文件名。\n"
-    "对方在认真提问、需要准确信息、情绪低落或正在争论时不要发。"
+    "- 只要情绪或使用场景对得上，就积极配一张，不要总是只发文字。\n"
+    "- 普通闲聊、吐槽、接梗、庆祝、围观时都可以考虑；一轮回复最多一张。\n"
+    "- 优先选“情绪”和“适合”与当前聊天一致的；标了“风险：高”的图只在明显玩梗的熟人局用。\n"
+    "- 需要时在回复最后单独加一行：[MEME:文件名]\n"
+    "- 不要解释这个标记，不要编造列表之外的文件名。\n"
+    "- 对方认真提问、需要准确信息、争论、安慰、隐私或严肃话题时不要发。"
 )
 
 # A GIF expands to four frames, so cap the total image parts sent to the model.
 _MAX_CHAT_IMAGE_PARTS = 8
+
+
+def load_member_aliases(path: Path) -> dict[str, str]:
+    """Read the local nickname -> real-name map (never published)."""
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    raw = data.get("aliases") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    aliases: dict[str, str] = {}
+    for nickname, real_name in raw.items():
+        if not isinstance(nickname, str) or not isinstance(real_name, str):
+            continue
+        nickname = nickname.strip()
+        real_name = real_name.strip()
+        if nickname and real_name and nickname != real_name:
+            aliases[nickname] = real_name
+    return aliases
+
+
+def build_member_alias_directive(aliases: dict[str, str]) -> str:
+    """Build the system-prompt block that prefers real names."""
+
+    if not aliases:
+        return ""
+    lines = [
+        "【称呼】",
+        "- 称呼群友时优先使用已知真名，不要用网名或单字简称。",
+        "- 只有不知道真名、或对方明确要求用网名时，才使用网名；不要自行猜测。",
+        "- 已知昵称与真名的对应关系：",
+    ]
+    for nickname, real_name in sorted(aliases.items()):
+        lines.append(f"  · {nickname} -> {real_name}")
+    return "\n".join(lines)
 
 
 class AIError(RuntimeError):
@@ -88,6 +131,9 @@ class MemeCaption:
     description: str
     tags: tuple[str, ...] = ()
     is_meme: bool = True
+    emotion: str = ""
+    use_when: tuple[str, ...] = ()
+    risk: str = "low"
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,6 +152,12 @@ class AIClient:
         self._settings = settings
         self._session = session
         self._endpoint = f"{settings.ai_base_url}/chat/completions"
+        self._system_prompt = settings.ai_system_prompt
+        directive = build_member_alias_directive(
+            load_member_aliases(settings.data_dir / "member_aliases.json")
+        )
+        if directive:
+            self._system_prompt = f"{self._system_prompt}\n\n{directive}"
 
     async def chat(
         self,
@@ -151,7 +203,7 @@ class AIClient:
                 )
             if len(parts) > 1:
                 user_content = parts
-        system_content = self._settings.ai_system_prompt
+        system_content = self._system_prompt
         if meme_catalog.strip():
             system_content = (
                 f"{system_content}\n\n"
@@ -256,7 +308,7 @@ class AIClient:
         raw = await self._complete(
             messages,
             model=self._settings.ai_model,
-            max_tokens=160,
+            max_tokens=260,
             temperature=0.0,
             purpose="表情包识别",
         )
@@ -524,7 +576,27 @@ def _parse_meme_caption(raw: str) -> MemeCaption:
         }
     else:
         is_meme = True
-    return MemeCaption(description, tuple(tags[:6]), is_meme)
+
+    emotion = str(data.get("emotion") or "").strip()[:12]
+    raw_use_when = data.get("use_when")
+    use_when: list[str] = []
+    if isinstance(raw_use_when, list):
+        for phrase in raw_use_when:
+            value = str(phrase).strip()
+            if value and value not in use_when:
+                use_when.append(value[:24])
+    risk = str(data.get("risk") or "low").strip().lower()
+    risk = {"低": "low", "中": "medium", "高": "high"}.get(risk, risk)
+    if risk not in {"low", "medium", "high"}:
+        risk = "low"
+    return MemeCaption(
+        description,
+        tuple(tags[:6]),
+        is_meme,
+        emotion,
+        tuple(use_when[:4]),
+        risk,
+    )
 
 
 def _parse_decision(raw: str) -> ImportanceDecision:

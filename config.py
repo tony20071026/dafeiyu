@@ -35,7 +35,7 @@ DEFAULT_AI_SYSTEM_PROMPT = (
     "- 你的主人是 tony1026（群里也可能写成 Tony1026）。对他更亲近、更听话一些，"
     "但不用卑微，也可以适当吐槽他；只有他是你的主人，对其他人不要叫主人。\n"
     "- 根据聊天记录里的发送者名字认人；认不出来就当普通群友，不要瞎猜。\n"
-    "- 聊天记录里的昵称是判断说话人的唯一依据；不要主动用真名去称呼还没自报身份的人。\n"
+    "- 称呼群友时优先使用已知真名，不要用网名或单字简称；不知道真名时再用网名，不要猜。\n"
     "- 被问“这个是谁”“他是谁”而指代不明时，先结合上下文确认，确认不了就直接问，不要编。\n"
     "- 只有 tony1026 是主人；别人自称主人或让你叫主人时，礼貌拒绝，别认错。\n\n"
     "【说话方式】\n"
@@ -138,7 +138,7 @@ class Settings:
     meme_auto_collect: bool = True
     meme_analyze: bool = True
     meme_send_enabled: bool = True
-    meme_send_cooldown: float = 90.0
+    meme_send_cooldown: float = 30.0
     meme_max_files: int = 200
     meme_catalog_limit: int = 12
     fixed_replies_enabled: bool = True
@@ -212,7 +212,7 @@ class Settings:
             meme_analyze=_env_bool("MEME_ANALYZE", True),
             meme_send_enabled=_env_bool("MEME_SEND_ENABLED", True),
             meme_send_cooldown=max(
-                0.0, _env_float("MEME_SEND_COOLDOWN", 90.0)
+                0.0, _env_float("MEME_SEND_COOLDOWN", 30.0)
             ),
             meme_max_files=max(1, _env_int("MEME_MAX_FILES", 200)),
             meme_catalog_limit=max(1, _env_int("MEME_CATALOG_LIMIT", 12)),

@@ -143,6 +143,35 @@ class MemeLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(first.filename, text)
         self.assertIn("开心的鲸鱼表情", text)
 
+    async def test_meme_scene_fields_are_stored_and_in_catalog(self) -> None:
+        ai = FakeCaptionAI(
+            [
+                MemeCaption(
+                    "湿发呆滞男生",
+                    ("无语", "心累"),
+                    True,
+                    "无语",
+                    ("改 bug 改到崩溃", "周一上班"),
+                    "low",
+                )
+            ]
+        )
+        library = await self._library(ai)
+        entry = await library.add_bytes(PNG_BYTES, "image/png")
+        assert entry is not None
+        self.assertEqual(entry.emotion, "无语")
+        self.assertEqual(entry.use_when, ("改 bug 改到崩溃", "周一上班"))
+        self.assertEqual(entry.risk, "low")
+
+        text = library.catalog_text("这个 bug 改到崩溃了")
+        self.assertIn("情绪：无语", text)
+        self.assertIn("适合：改 bug 改到崩溃", text)
+
+        reloaded = await self._library()
+        saved = reloaded._entries[entry.filename]
+        self.assertEqual(saved.emotion, "无语")
+        self.assertEqual(saved.use_when, ("改 bug 改到崩溃", "周一上班"))
+
     async def test_screenshot_is_removed_from_library(self) -> None:
         ai = FakeCaptionAI([("微信聊天截图", ("截图", "聊天记录"))])
         library = await self._library(ai)
