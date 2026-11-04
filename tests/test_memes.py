@@ -13,6 +13,7 @@ from handlers.message_handler import (
     _manual_meme_save_alias,
     _meme_save_alias,
 )
+from utils.ai import MemeCaption
 from utils.context_window import ContextWindowManager
 from utils.memes import MemeLibrary, _gif_complete
 
@@ -26,14 +27,20 @@ COMPLETE_GIF = (
 
 
 class FakeCaptionAI:
-    def __init__(self, descriptions: list[tuple[str, tuple[str, ...]]]) -> None:
+    def __init__(
+        self,
+        descriptions: list[tuple[str, tuple[str, ...]] | MemeCaption],
+    ) -> None:
         self._descriptions = descriptions
         self.calls = 0
 
-    async def describe_image(self, path: Path) -> tuple[str, tuple[str, ...]]:
+    async def describe_image(self, path: Path) -> MemeCaption:
         index = min(self.calls, len(self._descriptions) - 1)
         self.calls += 1
-        return self._descriptions[index]
+        item = self._descriptions[index]
+        if isinstance(item, MemeCaption):
+            return item
+        return MemeCaption(item[0], item[1])
 
 
 class MemeLibraryTests(unittest.IsolatedAsyncioTestCase):
@@ -143,6 +150,40 @@ class MemeLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(entry)
         self.assertEqual(len(library), 0)
         self.assertEqual(list(self.settings.memes_dir.glob("*.png")), [])
+
+    async def test_non_meme_photo_is_removed(self) -> None:
+        ai = FakeCaptionAI(
+            [MemeCaption("一盘三文鱼刺身", ("食物", "三文鱼"), False)]
+        )
+        library = await self._library(ai)
+        entry = await library.add_bytes(PNG_BYTES, "image/png")
+        self.assertIsNone(entry)
+        self.assertEqual(len(library), 0)
+        self.assertEqual(list(self.settings.memes_dir.glob("*.png")), [])
+
+    async def test_non_meme_pending_file_is_removed_on_analysis(self) -> None:
+        ai = FakeCaptionAI([MemeCaption("普通风景照", ("风景",), False)])
+        library = await self._library(ai)
+        path = self.settings.memes_dir / "photo.png"
+        path.write_bytes(PNG_BYTES)
+
+        self.assertTrue(await library.refresh(max_age=0))
+        await library.analyze_pending()
+
+        self.assertEqual(len(library), 0)
+        self.assertFalse(path.exists())
+
+    async def test_manual_alias_keeps_non_meme_image(self) -> None:
+        ai = FakeCaptionAI(
+            [MemeCaption("一盘三文鱼刺身", ("食物", "三文鱼"), False)]
+        )
+        library = await self._library(ai)
+        entry = await library.add_bytes(
+            PNG_BYTES, "image/png", alias="三文鱼"
+        )
+        self.assertIsNotNone(entry)
+        self.assertEqual(len(library), 1)
+        self.assertEqual(library.search("三文鱼")[0].tags[0], "三文鱼")
 
     async def test_gif_is_collected_and_sendable(self) -> None:
         ai = FakeCaptionAI([("哈哈哈的黄色小人", ("哈哈哈", "黄色"))])

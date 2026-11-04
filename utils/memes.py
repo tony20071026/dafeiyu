@@ -449,15 +449,17 @@ class MemeLibrary:
             if not path.exists():
                 continue
             try:
-                description, tags = await self._ai.describe_image(path)
+                caption = await self._ai.describe_image(path)
             except Exception as exc:  # AIError and unexpected provider failures
                 LOGGER.warning("表情包识别失败 %s: %s", filename, exc)
                 continue
+            description = caption.description
+            tags = caption.tags
             if not description:
                 continue
-            if self._looks_like_non_meme(description, tags):
+            if not caption.is_meme or self._looks_like_non_meme(description, tags):
                 LOGGER.info(
-                    "表情包识别为截图/二维码等，跳过: %s | %s",
+                    "表情包识别为普通照片/截图/二维码等，移除: %s | %s",
                     filename,
                     description,
                 )
@@ -706,19 +708,20 @@ class MemeLibrary:
 
         if self._ai is not None and self._settings.meme_analyze:
             try:
-                description, tags = await self._ai.describe_image(path)
+                caption = await self._ai.describe_image(path)
             except Exception as exc:
                 LOGGER.warning("新表情包识别失败 %s: %s", filename, exc)
                 if alias:
                     await self.apply_alias(entry, alias)
                 return entry
+            description = caption.description
+            tags = caption.tags
             if (
-                description
-                and self._looks_like_non_meme(description, tags)
+                (not caption.is_meme or self._looks_like_non_meme(description, tags))
                 and not alias
             ):
                 LOGGER.info(
-                    "新图片识别为截图/二维码等，不加入表情包库: %s | %s",
+                    "新图片识别为普通照片/截图/二维码等，不加入表情包库: %s | %s",
                     filename,
                     description,
                 )

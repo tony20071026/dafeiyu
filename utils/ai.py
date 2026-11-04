@@ -50,11 +50,17 @@ JUDGE_SYSTEM_PROMPT = (
 
 
 MEME_CAPTION_PROMPT = (
-    "你是表情包标注器。看图片，用简短中文描述画面和情绪，并给出检索标签。\n"
-    "如果图片是聊天截图、二维码、文档、表格、证件等不适合当表情包的内容，"
-    "在 description 里明确写出对应词语。\n"
+    "你是表情包审核员和标注器。先判断图片是否适合在群聊里当表情包使用，"
+    "再用简短中文描述画面和情绪，并给出检索标签。\n"
+    "适合当表情包（is_meme=true）：带文字/梗、夸张表情、搞笑动作、反应图、"
+    "卡通形象，能在聊天中表达情绪、吐槽或接梗。\n"
+    "不适合（is_meme=false）：普通食物照、饮料照、风景照、普通自拍、商品图、"
+    "聊天截图、二维码、文档、表格、证件、屏幕截图、模糊或无意义的图片。\n"
+    "注意：单纯拍一盘菜、一张自拍或一张风景，即使画面清楚也不是表情包；"
+    "只有带明显玩梗、文字或夸张情绪时才适合。\n"
     "只输出一行 JSON，不要 markdown，不要解释：\n"
-    '{"description": "不超过30字的画面描述", "tags": ["3-6个中文关键词"]}'
+    '{"is_meme": true, "description": "不超过30字的画面描述", '
+    '"tags": ["3-6个中文关键词"]}'
 )
 
 MEME_SELECTION_RULES = (
@@ -73,6 +79,15 @@ _MAX_CHAT_IMAGE_PARTS = 8
 
 class AIError(RuntimeError):
     """A recoverable AI API failure."""
+
+
+@dataclass(frozen=True, slots=True)
+class MemeCaption:
+    """Vision-model caption plus a verdict on whether the image is a meme."""
+
+    description: str
+    tags: tuple[str, ...] = ()
+    is_meme: bool = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,8 +184,8 @@ class AIClient:
             meme_catalog=meme_catalog,
         )
 
-    async def describe_image(self, path: Path) -> tuple[str, tuple[str, ...]]:
-        """Ask the vision model to caption a local meme image."""
+    async def describe_image(self, path: Path) -> MemeCaption:
+        """Ask the vision model to caption and vet a candidate meme image."""
 
         if not self._settings.ai_api_key:
             raise AIError("未配置 AI_API_KEY")
@@ -179,7 +194,7 @@ class AIClient:
         except OSError as exc:
             raise AIError(f"读取图片失败: {exc}") from exc
         if not data:
-            return "", ()
+            return MemeCaption("", ())
         mime_type = mimetypes.guess_type(path.name)[0] or "image/jpeg"
 
         content: list[dict[str, Any]] = []
@@ -194,8 +209,9 @@ class AIClient:
                         "text": (
                             "这是一张动图，下面按时间顺序均匀抽取了 "
                             f"{len(frames)} 帧。请综合所有帧描述动作变化、"
-                            "表情和情绪；如果仍然像聊天截图、二维码、文档等"
-                            "不适合当表情包的内容，也要明确指出。"
+                            "表情和情绪，并判断它是否适合当表情包；"
+                            "如果像普通录像、聊天截图、二维码、文档等"
+                            "不适合的内容，把 is_meme 设为 false。"
                             "只输出 JSON。"
                         ),
                     }
@@ -221,7 +237,10 @@ class AIClient:
         if not content:
             encoded = base64.b64encode(data).decode("ascii")
             content = [
-                {"type": "text", "text": "请描述这张表情包，只输出 JSON。"},
+                {
+                    "type": "text",
+                    "text": "请判断这张图片是否适合当表情包，并描述画面，只输出 JSON。",
+                },
                 {
                     "type": "image_url",
                     "image_url": {
@@ -464,7 +483,7 @@ class AIClient:
         raise AIError(last_error)
 
 
-def _parse_meme_caption(raw: str) -> tuple[str, tuple[str, ...]]:
+def _parse_meme_caption(raw: str) -> MemeCaption:
     text = raw.strip()
     if text.startswith("```"):
         text = text.strip("`")
@@ -482,7 +501,7 @@ def _parse_meme_caption(raw: str) -> tuple[str, tuple[str, ...]]:
 
     if not isinstance(data, dict):
         description = text.splitlines()[0].strip()[:80] if text else ""
-        return description, ()
+        return MemeCaption(description, ())
 
     description = str(data.get("description") or "").strip()[:80]
     raw_tags = data.get("tags")
@@ -492,7 +511,20 @@ def _parse_meme_caption(raw: str) -> tuple[str, tuple[str, ...]]:
             value = str(tag).strip()
             if value and value not in tags:
                 tags.append(value[:16])
-    return description, tuple(tags[:6])
+    raw_is_meme = data.get("is_meme")
+    if isinstance(raw_is_meme, bool):
+        is_meme = raw_is_meme
+    elif isinstance(raw_is_meme, str):
+        is_meme = raw_is_meme.strip().lower() not in {
+            "false",
+            "0",
+            "no",
+            "否",
+            "不是",
+        }
+    else:
+        is_meme = True
+    return MemeCaption(description, tuple(tags[:6]), is_meme)
 
 
 def _parse_decision(raw: str) -> ImportanceDecision:

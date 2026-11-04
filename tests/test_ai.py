@@ -11,7 +11,7 @@ from aiohttp import web
 from PIL import Image
 
 from config import Settings
-from utils.ai import AIClient
+from utils.ai import AIClient, _parse_meme_caption
 
 
 class AIClientTests(unittest.IsolatedAsyncioTestCase):
@@ -215,12 +215,13 @@ class AIClientTests(unittest.IsolatedAsyncioTestCase):
                 )
                 async with aiohttp.ClientSession() as session:
                     client = AIClient(settings, session)
-                    description, tags = await client.describe_image(gif_path)
+                    caption = await client.describe_image(gif_path)
         finally:
             await runner.cleanup()
 
-        self.assertEqual(description, "多帧动作")
-        self.assertEqual(tags, ("动图", "测试"))
+        self.assertEqual(caption.description, "多帧动作")
+        self.assertEqual(caption.tags, ("动图", "测试"))
+        self.assertTrue(caption.is_meme)
         content = captured["body"]["messages"][1]["content"]
         image_parts = [
             part for part in content if part.get("type") == "image_url"
@@ -409,6 +410,23 @@ class AIClientTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("enable_thinking", body)
         self.assertIn("宁可少说", body["messages"][0]["content"])
         self.assertIn("发送者：小明", body["messages"][1]["content"])
+
+
+class MemeCaptionParserTests(unittest.TestCase):
+    def test_parses_non_meme_verdict(self) -> None:
+        caption = _parse_meme_caption(
+            '{"is_meme": false, "description": "一盘三文鱼刺身", '
+            '"tags": ["食物", "三文鱼"]}'
+        )
+        self.assertFalse(caption.is_meme)
+        self.assertEqual(caption.description, "一盘三文鱼刺身")
+        self.assertEqual(caption.tags, ("食物", "三文鱼"))
+
+    def test_missing_verdict_defaults_to_meme(self) -> None:
+        caption = _parse_meme_caption(
+            '{"description": "夸张的搞笑表情", "tags": ["搞笑"]}'
+        )
+        self.assertTrue(caption.is_meme)
 
 
 if __name__ == "__main__":
