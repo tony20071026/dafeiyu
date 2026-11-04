@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import tempfile
 import unittest
 from pathlib import Path
@@ -72,6 +73,48 @@ class MemeLibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             reloaded._entries[entry.filename].sha256, entry.sha256
         )
+
+    async def test_manual_duplicate_files_are_deduped_by_hash(self) -> None:
+        library = await self._library()
+        directory = self.settings.memes_dir
+        (directory / "a.png").write_bytes(PNG_BYTES)
+        (directory / "b.png").write_bytes(PNG_BYTES)
+
+        await library.refresh(max_age=0)
+
+        self.assertEqual(len(library), 1)
+        self.assertEqual(len(list(directory.glob("*.png"))), 1)
+        entry = next(iter(library._entries.values()))
+        self.assertEqual(entry.sha256, hashlib.sha256(PNG_BYTES).hexdigest())
+
+    async def test_duplicate_with_other_suffix_is_removed(self) -> None:
+        library = await self._library()
+        directory = self.settings.memes_dir
+        (directory / "a.png").write_bytes(PNG_BYTES)
+        (directory / "b.jpg").write_bytes(PNG_BYTES)
+
+        await library.refresh(max_age=0)
+
+        self.assertEqual(len(library), 1)
+        self.assertEqual(
+            [path.name for path in directory.iterdir() if path.is_file()],
+            ["a.png"],
+        )
+
+    async def test_duplicate_cleanup_keeps_described_entry(self) -> None:
+        library = await self._library()
+        entry = await library.add_bytes(PNG_BYTES, "image/png")
+        assert entry is not None
+        await library.apply_alias(entry, "测试表情")
+        duplicate = self.settings.memes_dir / "manual_copy.png"
+        duplicate.write_bytes(PNG_BYTES)
+
+        await library.refresh(max_age=0)
+
+        self.assertEqual(len(library), 1)
+        self.assertTrue((self.settings.memes_dir / entry.filename).is_file())
+        self.assertFalse(duplicate.exists())
+        self.assertIn("测试表情", library._entries[entry.filename].description)
 
     async def test_ai_caption_is_used_for_topic_matching(self) -> None:
         ai = FakeCaptionAI(

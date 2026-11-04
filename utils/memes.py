@@ -327,7 +327,8 @@ class MemeLibrary:
                 del self._entries[filename]
                 changed = True
 
-        for filename, path in files.items():
+        seen_hashes: dict[str, str] = {}
+        for filename, path in sorted(files.items()):
             try:
                 stat = path.stat()
             except OSError:
@@ -350,7 +351,62 @@ class MemeLibrary:
             if not entry.added_at:
                 entry.added_at = stat.st_mtime or time.time()
                 changed = True
+
+            digest = entry.sha256
+            if not digest:
+                continue
+            keeper_name = seen_hashes.get(digest)
+            if keeper_name is None:
+                seen_hashes[digest] = filename
+                continue
+
+            # Two files with identical bytes: keep the entry that already has
+            # a description, otherwise keep the first one, and remove the
+            # redundant file so it never shows up as a second random meme.
+            keeper = self._entries.get(keeper_name)
+            if (
+                keeper is not None
+                and not keeper.description
+                and entry.description
+            ):
+                self._entries.pop(keeper_name, None)
+                self._delete_duplicate_file(keeper_name)
+                seen_hashes[digest] = filename
+                changed = True
+                LOGGER.info(
+                    "发现重复表情包，保留有描述的 %s，删除 %s",
+                    filename,
+                    keeper_name,
+                )
+                continue
+
+            self._entries.pop(filename, None)
+            self._delete_duplicate_file(filename)
+            changed = True
+            LOGGER.info(
+                "发现重复表情包（sha256=%s），删除 %s，保留 %s",
+                digest[:12],
+                filename,
+                keeper_name,
+            )
         return changed
+
+    def _delete_duplicate_file(self, filename: str) -> None:
+        path = self.directory / filename
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            LOGGER.warning("删除重复表情包文件失败 %s: %s", filename, exc)
+
+    def _find_by_hash(self, digest: str) -> MemeEntry | None:
+        """Return an indexed entry with the same content hash, if any."""
+
+        if not digest:
+            return None
+        for entry in self._entries.values():
+            if entry.sha256 == digest:
+                return entry
+        return None
 
     async def _save_locked(self) -> None:
         self.index_path.parent.mkdir(parents=True, exist_ok=True)
@@ -444,14 +500,7 @@ class MemeLibrary:
 
             digest = hashlib.sha256(data).hexdigest()
             async with self._lock:
-                existing = next(
-                    (
-                        entry
-                        for entry in self._entries.values()
-                        if entry.sha256 == digest
-                    ),
-                    None,
-                )
+                existing = self._find_by_hash(digest)
             if existing is not None:
                 if alias:
                     existing = await self.apply_alias(existing, alias)
@@ -629,8 +678,8 @@ class MemeLibrary:
                     self._settings.meme_max_files,
                 )
                 return None
-            if any(entry.sha256 == digest for entry in self._entries.values()):
-                LOGGER.debug("重复表情包，跳过: %s", digest[:12])
+            if self._find_by_hash(digest) is not None:
+                LOGGER.info("重复表情包，跳过: %s", digest[:12])
                 return None
             filename = f"group_{digest[:12]}{suffix}"
             path = self.directory / filename
