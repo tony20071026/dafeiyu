@@ -1,0 +1,7 @@
+aiohttp>=3.10.0,<4.0.0
+aiofiles>=24.1.0,<26.0.0
+websockets>=12.0,<16.0
+python-dotenv>=1.0.0,<2.0.0
+
+# GIF 表情包按帧识别依赖 Pillow（占位表情包生成器也优先使用它）。
+Pillow>=10.4.0,<13.0.0

@@ -1,0 +1,28 @@
+# 本地凭据
+.env
+.env.*
+!.env.example
+
+# Python 虚拟环境与缓存
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# 运行日志与进程状态
+logs/
+*.log
+*.log.*
+
+# 运行时数据（QQ 号、昵称、表情包索引、进程号等）
+data/*
+!data/.gitkeep
+
+# 群聊里收集到的图片，仅保留仓库自带的占位图
+assets/memes/group_*
+
+# 临时文件
+*.tmp
+.DS_Store
