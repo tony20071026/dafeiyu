@@ -105,6 +105,25 @@ def load_member_aliases(path: Path) -> dict[str, str]:
     return aliases
 
 
+def load_group_context(path: Path, limit: int = 2_000) -> str:
+    """Read the local, git-ignored background notes for this group.
+
+    The file is optional.  Blank lines and ``#`` comments are dropped so it
+    can stay readable without leaking formatting into the prompt.
+    """
+
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    lines = [
+        line.strip()
+        for line in raw.replace("\r", "\n").split("\n")
+        if line.strip() and not line.strip().startswith("#")
+    ]
+    return "\n".join(lines)[:limit]
+
+
 def build_member_alias_directive(aliases: dict[str, str]) -> str:
     """Build the system-prompt block that prefers real names."""
 
@@ -154,6 +173,11 @@ class AIClient:
         self._session = session
         self._endpoint = f"{settings.ai_base_url}/chat/completions"
         self._system_prompt = settings.ai_system_prompt
+        context = load_group_context(settings.data_dir / "group_context.txt")
+        if context:
+            self._system_prompt = (
+                f"{self._system_prompt}\n\n【补充背景】\n{context}"
+            )
         directive = build_member_alias_directive(
             load_member_aliases(settings.data_dir / "member_aliases.json")
         )

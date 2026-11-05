@@ -469,6 +469,37 @@ class MemberAliasPromptTests(unittest.TestCase):
             self.assertIn("优先使用已知真名", client._system_prompt)
 
 
+class GroupContextPromptTests(unittest.TestCase):
+    def test_group_context_file_is_appended(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data_dir = Path(temp)
+            (data_dir / "group_context.txt").write_text(
+                "# 注释不会进入提示词\n\n这个群是一个乐队群。\n",
+                encoding="utf-8",
+            )
+            settings = Settings(
+                app_id="app", app_secret="secret", data_dir=data_dir
+            )
+            client = AIClient(settings, None)  # type: ignore[arg-type]
+            self.assertIn("【补充背景】", client._system_prompt)
+            self.assertIn("这个群是一个乐队群。", client._system_prompt)
+            self.assertNotIn("注释不会进入提示词", client._system_prompt)
+
+    def test_missing_group_context_is_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            settings = Settings(
+                app_id="app", app_secret="secret", data_dir=Path(temp)
+            )
+            client = AIClient(settings, None)  # type: ignore[arg-type]
+            self.assertNotIn("【补充背景】", client._system_prompt)
+
+    def test_prompt_forbids_repeating_context(self) -> None:
+        settings = Settings(app_id="app", app_secret="secret")
+        client = AIClient(settings, None)  # type: ignore[arg-type]
+        self.assertIn("不要复述", client._system_prompt)
+        self.assertIn("小萝莉", client._system_prompt)
+
+
 class AIRetryTests(unittest.IsolatedAsyncioTestCase):
     async def test_transient_500_is_retried_three_times(self) -> None:
         from unittest.mock import AsyncMock, patch
