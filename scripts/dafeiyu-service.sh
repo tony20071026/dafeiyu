@@ -27,7 +27,7 @@ is_running() {
     # A stale pid file can point at a recycled PID.  Only accept the process
     # if it really is this supervisor.
     if [ -r "/proc/$pid/cmdline" ]; then
-        tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q 'dafeiyu-service.sh.*_supervise'
+        tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -q 'dafeiyu-service.sh.*_supervise'
         return $?
     fi
     return 0
