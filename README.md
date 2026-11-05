@@ -121,10 +121,14 @@ scripts/dafeiyu-service.sh stop      # 停止
 
 ## 开机自启动
 
-当前环境没有可用的用户级 systemd 会话，也没有 sudo 权限创建系统服务，因此使用 **cron `@reboot`** 开机拉起：
+当前环境没有可用的用户级 systemd 会话，也没有 sudo 权限创建系统服务，因此使用 **cron** 拉起和看护：
 
 ```cron
+# 开机启动
 @reboot /opt/dafeyu/workspace/scripts/dafeiyu-service.sh start >>/opt/dafeyu/workspace/logs/service.log 2>&1
+
+# 每分钟检查一次；进程被外部清理后自动拉起
+* * * * * /opt/dafeyu/workspace/scripts/dafeiyu-service.sh ensure >/dev/null 2>&1
 ```
 
 安装或查看：
@@ -134,16 +138,22 @@ crontab -l
 crontab -e
 ```
 
+`ensure` 只在未运行时启动，不会重复拉起。它还会校验 PID 文件里的进程确实是本守护脚本，避免 PID 被系统复用后误判为“正在运行”。
+
 开机后 `start` 会启动守护进程；如果网络尚未就绪导致 Token 获取失败，守护进程会每 10 秒重试，不会直接放弃。
 
-取消开机自启动：
+取消自启动和看护：
 
 ```bash
 crontab -e
-# 删除 @reboot 那一行
+# 删除 @reboot 和 ensure 两行
 ```
 
-注意：`@reboot` 依赖 cron 服务处于运行状态。可用 `systemctl is-active cron` 确认。
+注意：cron 服务必须处于运行状态，可用 `systemctl is-active cron` 确认。
+
+### 为什么不用 OpenCode 的 shell 直接启动
+
+当前终端运行在 `opencode.service` 的 cgroup 里。OpenCode 服务重启时，systemd 会清理整个 cgroup，把从终端里启动的大肥鱼一起杀掉。通过 cron 启动后，守护进程属于 `cron.service` cgroup，不会再被 OpenCode 重启误伤。
 
 ## 查看日志
 

@@ -23,7 +23,14 @@ is_running() {
     case "$pid" in
         ''|*[!0-9]*) return 1 ;;
     esac
-    kill -0 "$pid" 2>/dev/null
+    kill -0 "$pid" 2>/dev/null || return 1
+    # A stale pid file can point at a recycled PID.  Only accept the process
+    # if it really is this supervisor.
+    if [ -r "/proc/$pid/cmdline" ]; then
+        tr '\0' ' ' < "/proc/$pid/cmdline" | grep -q 'dafeiyu-service.sh.*_supervise'
+        return $?
+    fi
+    return 0
 }
 
 supervise() {
@@ -75,6 +82,13 @@ start() {
     return 1
 }
 
+ensure() {
+    if is_running; then
+        return 0
+    fi
+    start
+}
+
 stop() {
     if ! is_running; then
         rm -f "$PID_FILE" "$STOP_FILE"
@@ -113,12 +127,13 @@ status() {
 
 case "${1:-}" in
     start) start ;;
+    ensure) ensure ;;
     stop) stop ;;
     restart) stop; start ;;
     status) status ;;
     _supervise) supervise ;;
     *)
-        echo "用法: $0 {start|stop|restart|status}"
+        echo "用法: $0 {start|ensure|stop|restart|status}" >&2
         exit 2
         ;;
 esac
