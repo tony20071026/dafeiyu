@@ -485,7 +485,12 @@ class AIClient:
 
         started = time.monotonic()
         last_error = "未知错误"
-        for attempt in range(2):
+        # Transient upstream errors ("Inference engine abort", 429, 5xx) are
+        # common enough that one retry is not always enough.  Three attempts
+        # with a short backoff keeps an @mention from being silently dropped.
+        attempts = 3
+        for attempt in range(attempts):
+            last_attempt = attempt == attempts - 1
             try:
                 async with self._session.post(
                     self._endpoint,
@@ -497,15 +502,32 @@ class AIClient:
                     raw = await response.text()
             except (aiohttp.ClientError, asyncio.TimeoutError) as exc:
                 last_error = f"网络错误: {exc}"
-                if attempt == 0:
-                    LOGGER.warning("AI 请求失败，重试一次：%s", exc)
-                    await asyncio.sleep(1)
-                    continue
-                raise AIError(last_error) from exc
+                if last_attempt:
+                    raise AIError(last_error) from exc
+                delay = 1.0 + attempt
+                LOGGER.warning(
+                    "AI 请求失败，%.0f 秒后重试（第 %s/%s 次）：%s",
+                    delay,
+                    attempt + 1,
+                    attempts,
+                    exc,
+                )
+                await asyncio.sleep(delay)
+                continue
 
-            if status in {429, 500, 502, 503, 504} and attempt == 0:
-                LOGGER.warning("AI 返回 HTTP %s，1 秒后重试", status)
-                await asyncio.sleep(1)
+            if status in {429, 500, 502, 503, 504} and not last_attempt:
+                detail = _extract_error(raw)
+                last_error = f"HTTP {status}: {detail}"
+                delay = 1.0 + attempt
+                LOGGER.warning(
+                    "AI 返回 HTTP %s，%.0f 秒后重试（第 %s/%s 次）：%s",
+                    status,
+                    delay,
+                    attempt + 1,
+                    attempts,
+                    detail[:120],
+                )
+                await asyncio.sleep(delay)
                 continue
             if status >= 400:
                 detail = _extract_error(raw)

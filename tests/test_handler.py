@@ -764,6 +764,71 @@ class HandlerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.api.c2c_texts[-1][1], "读完了")
         self.assertIn("https://example.com/article", ai.contexts[-1])
 
+    async def test_mention_gets_a_notice_when_ai_fails(self) -> None:
+        class FailingAI:
+            async def chat(self, context_text: str, **kwargs) -> str:
+                raise AIError("boom")
+
+        handler = MessageHandler(
+            self.settings, self.api, self.contexts, FailingAI()  # type: ignore[arg-type]
+        )
+        await handler.handle(_message("在吗", mentioned=True))
+        self.assertEqual(len(self.api.texts), 1)
+        self.assertIn("再说一遍", self.api.texts[-1][2])
+
+    async def test_quote_of_bot_text_skips_judge(self) -> None:
+        class FakeAI:
+            def __init__(self) -> None:
+                self.judge_calls = 0
+
+            async def judge(self, context_text, message_text, *, sender_name=""):
+                self.judge_calls += 1
+                return ImportanceDecision(False, 0, "不该回")
+
+            async def chat(self, context_text: str, **kwargs) -> str:
+                return "我在呢"
+
+        ai = FakeAI()
+        handler = MessageHandler(
+            self.settings, self.api, self.contexts, ai  # type: ignore[arg-type]
+        )
+        # Teach the handler what the bot just said.
+        await handler.handle(_message("/ping", mentioned=True))
+        bot_reply = self.api.texts[-1][2]
+
+        # QQ often omits the quoted author, so only the quoted text is given.
+        await handler.handle(
+            _message("你怎么看", quoted_content=bot_reply)
+        )
+        self.assertEqual(ai.judge_calls, 0)
+        self.assertEqual(self.api.texts[-1][2], "我在呢")
+
+    async def test_quote_with_author_bot_skips_judge(self) -> None:
+        class FakeAI:
+            def __init__(self) -> None:
+                self.judge_calls = 0
+
+            async def judge(self, context_text, message_text, *, sender_name=""):
+                self.judge_calls += 1
+                return ImportanceDecision(False, 0, "不该回")
+
+            async def chat(self, context_text: str, **kwargs) -> str:
+                return "嗯哼"
+
+        ai = FakeAI()
+        handler = MessageHandler(
+            self.settings, self.api, self.contexts, ai  # type: ignore[arg-type]
+        )
+        await handler.handle(
+            _message(
+                "这话什么意思",
+                quoted_author=self.settings.bot_name,
+                quoted_content="随便说点什么",
+            )
+        )
+        self.assertEqual(ai.judge_calls, 0)
+        self.assertEqual(self.api.texts[-1][2], "嗯哼")
+
 
 class GatewayEventParsingTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:

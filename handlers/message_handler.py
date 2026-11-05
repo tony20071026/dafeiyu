@@ -196,6 +196,9 @@ class MessageHandler:
         self._quote_cache: dict[
             str, deque[tuple[str, str, str, str, tuple[str, ...]]]
         ] = {}
+        # conversation -> recent bot replies.  QQ does not always report the
+        # quoted author, so this lets us recognise "quote the bot" anyway.
+        self._bot_replies: dict[str, deque[str]] = {}
 
     async def handle(self, message: IncomingMessage) -> None:
         if not (
@@ -217,6 +220,18 @@ class MessageHandler:
         self._remember_recent_images(message)
         self._remember_quote_source(message)
         quote_author, quote_text, quote_images = self._resolve_quote(message)
+        if (
+            message.scene == "group"
+            and not message.mentioned
+            and quote_text
+            and not self._quotes_bot(message)
+            and self._quote_matches_bot_reply(
+                message.conversation_id, quote_text
+            )
+        ):
+            # The quoted author was missing, but the quoted text is one of our
+            # own replies: treat it as talking to the bot.
+            message = replace(message, quoted_author=self._settings.bot_name)
         if quote_images and not message.image_urls:
             message = replace(message, quoted_image_urls=quote_images)
         self._queue_meme_collection(message)
@@ -518,6 +533,7 @@ class MessageHandler:
         return (
             message.scene == "group"
             and not message.mentioned
+            and not self._quotes_bot(message)
             and self._ai is not None
             and self._settings.group_reply_judge
         )
@@ -917,7 +933,13 @@ class MessageHandler:
         except AIError as exc:
             LOGGER.error("AI 回复失败: %s", exc)
             if message.scene == "group":
-                # A failure notice in a busy group is just more noise.
+                # A failure notice in ordinary chatter is just noise, but a
+                # direct @mention (or a quote of the bot) should never look
+                # like the bot ignored the user.
+                if message.mentioned or self._quotes_bot(message):
+                    await self._reply_text(
+                        message, "刚卡了一下，你再说一遍？"
+                    )
                 return
             await self._reply_text(
                 message,
@@ -931,6 +953,38 @@ class MessageHandler:
         )
         await self._send_ai_output(message, reply)
 
+    def _quotes_bot(self, message: IncomingMessage) -> bool:
+        """True when the message quotes the bot's own message."""
+
+        author = (message.quoted_author or "").strip()
+        bot_name = (self._settings.bot_name or "").strip()
+        return bool(author and bot_name and author == bot_name)
+
+    def _quote_matches_bot_reply(self, conversation_id: str, text: str) -> bool:
+        """Fallback for quote events that omit the quoted author."""
+
+        history = self._bot_replies.get(conversation_id)
+        if not history:
+            return False
+        quoted = _normalize_quote_text(text)
+        if len(quoted) < 4:
+            return False
+        for reply in history:
+            normalized = _normalize_quote_text(reply)
+            if not normalized:
+                continue
+            if quoted == normalized:
+                return True
+            shorter, longer = (
+                (quoted, normalized)
+                if len(quoted) <= len(normalized)
+                else (normalized, quoted)
+            )
+            # Clients may trim long messages, so accept a long prefix match.
+            if len(shorter) >= 6 and longer.startswith(shorter):
+                return True
+        return False
+
     def _should_read_links(self, message: IncomingMessage) -> bool:
         """Only read pages for direct interactions, never for ambient links."""
 
@@ -938,9 +992,7 @@ class MessageHandler:
             return True
         if message.mentioned:
             return True
-        return bool(message.quoted_author) and (
-            message.quoted_author.strip() == self._settings.bot_name
-        )
+        return self._quotes_bot(message)
 
     async def _link_context(self, message: IncomingMessage) -> str:
         if self._web_fetcher is None:
@@ -1161,6 +1213,10 @@ class MessageHandler:
             if message.scene == "group":
                 self._reset_group_silence(message)
                 self._mark_group_spoke(message.conversation_id)
+                history = self._bot_replies.setdefault(
+                    message.conversation_id, deque(maxlen=10)
+                )
+                history.append(content)
             LOGGER.info(
                 "文本回复已发送 scene=%s target=%s msg_id=%s chars=%s",
                 message.scene,
@@ -1236,6 +1292,12 @@ class MessageHandler:
         if image:
             return "图片上传或发送失败，请稍后重试，或换一张图片。"
         return "发送失败，请稍后重试。"
+
+
+def _normalize_quote_text(text: str) -> str:
+    """Collapse whitespace so quoted text can be compared reliably."""
+
+    return " ".join((text or "").split()).strip("「」\"' ")
 
 
 def _parse_event_time(raw: str) -> datetime | None:

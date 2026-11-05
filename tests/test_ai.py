@@ -469,5 +469,56 @@ class MemberAliasPromptTests(unittest.TestCase):
             self.assertIn("优先使用已知真名", client._system_prompt)
 
 
+class AIRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transient_500_is_retried_three_times(self) -> None:
+        from unittest.mock import AsyncMock, patch
+
+        calls = 0
+
+        async def handler(request: web.Request) -> web.Response:
+            nonlocal calls
+            calls += 1
+            if calls < 3:
+                return web.Response(
+                    status=500,
+                    text='{"error": {"message": "engine abort"}}',
+                    content_type="application/json",
+                )
+            return web.json_response(
+                {
+                    "model": "chat-model",
+                    "choices": [{"message": {"content": "好了"}}],
+                    "usage": {},
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/chat/completions", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+        try:
+            settings = Settings(
+                app_id="app",
+                app_secret="secret",
+                ai_api_key="test-key",
+                ai_base_url=f"http://127.0.0.1:{port}",
+                ai_model="chat-model",
+                ai_enabled=True,
+                ai_timeout=5,
+            )
+            async with aiohttp.ClientSession() as session:
+                client = AIClient(settings, session)
+                with patch("utils.ai.asyncio.sleep", new=AsyncMock()):
+                    reply = await client.chat("你好")
+        finally:
+            await runner.cleanup()
+
+        self.assertEqual(reply, "好了")
+        self.assertEqual(calls, 3)
+
+
 if __name__ == "__main__":
     unittest.main()
