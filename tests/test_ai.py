@@ -468,6 +468,90 @@ class MemberAliasPromptTests(unittest.TestCase):
             self.assertIn("李 -> 李小明", client._system_prompt)
             self.assertIn("优先使用已知真名", client._system_prompt)
 
+    def test_call_as_overrides_real_name(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data_dir = Path(temp)
+            (data_dir / "member_aliases.json").write_text(
+                '{"aliases": {"某憨不憨": "某甲"},'
+                ' "call_as": {"某甲": ["小甲", "甲甲"]}}',
+                encoding="utf-8",
+            )
+            settings = Settings(
+                app_id="app", app_secret="secret", data_dir=data_dir
+            )
+            client = AIClient(settings, None)  # type: ignore[arg-type]
+            self.assertIn("某甲 -> 小甲 / 甲甲", client._system_prompt)
+            self.assertIn("某憨不憨 -> 某甲（叫 小甲/甲甲）", client._system_prompt)
+            self.assertIn("不要用全名", client._system_prompt)
+            self.assertIn("任何时候都不要写出这些人的全名", client._system_prompt)
+
+    def test_call_as_accepts_a_single_string(self) -> None:
+        from utils.ai import load_call_as
+
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "member_aliases.json"
+            path.write_text(
+                '{"call_as": {"某甲": "小甲", "某乙": "  ", "某丙": 1}}',
+                encoding="utf-8",
+            )
+            self.assertEqual(load_call_as(path), {"某甲": ["小甲"]})
+
+    def test_missing_call_as_is_fine(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            data_dir = Path(temp)
+            (data_dir / "member_aliases.json").write_text(
+                '{"aliases": {"某憨不憨": "某甲"}}', encoding="utf-8"
+            )
+            settings = Settings(
+                app_id="app", app_secret="secret", data_dir=data_dir
+            )
+            client = AIClient(settings, None)  # type: ignore[arg-type]
+            self.assertIn("某憨不憨 -> 某甲", client._system_prompt)
+            self.assertNotIn("固定叫法", client._system_prompt)
+
+
+class DisplayNamesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        from utils.ai import DisplayNames
+
+        self.display = DisplayNames.build(
+            {"某憨不憨": "某甲", "甲": "某甲"},
+            {"某甲": ["小甲", "甲甲"]},
+        )
+
+    def test_full_name_becomes_preferred_nickname(self) -> None:
+        self.assertEqual(
+            self.display.apply("刚才是某甲说的"), "刚才是小甲说的"
+        )
+
+    def test_alias_becomes_preferred_nickname(self) -> None:
+        self.assertEqual(self.display.apply("某憨不憨笑了"), "小甲笑了")
+
+    def test_duplicate_parenthetical_is_collapsed(self) -> None:
+        self.assertEqual(
+            self.display.apply("某甲（小甲）刚才说的"), "小甲刚才说的"
+        )
+
+    def test_alternate_nickname_parenthetical_is_collapsed(self) -> None:
+        self.assertEqual(
+            self.display.apply("小甲（甲甲）来了"), "小甲来了"
+        )
+
+    def test_single_character_alias_is_not_rewritten(self) -> None:
+        self.assertEqual(self.display.apply("甲"), "甲")
+
+    def test_unrelated_parenthetical_is_kept(self) -> None:
+        self.assertEqual(
+            self.display.apply("小甲（甩尾巴）"), "小甲（甩尾巴）"
+        )
+
+    def test_no_call_as_is_a_noop(self) -> None:
+        from utils.ai import DisplayNames
+
+        empty = DisplayNames.build({"某憨不憨": "某甲"}, {})
+        text = "某甲（某甲）说某甲"
+        self.assertEqual(empty.apply(text), text)
+
 
 class GroupContextPromptTests(unittest.TestCase):
     def test_group_context_file_is_appended(self) -> None:
@@ -549,6 +633,54 @@ class AIRetryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(reply, "好了")
         self.assertEqual(calls, 3)
+
+
+class AIChatDisplayNameTests(unittest.IsolatedAsyncioTestCase):
+    async def test_chat_output_never_contains_the_full_name(self) -> None:
+        async def handler(request: web.Request) -> web.Response:
+            return web.json_response(
+                {
+                    "model": "chat-model",
+                    "choices": [
+                        {"message": {"content": "某甲（小甲）刚才说的"}}
+                    ],
+                    "usage": {},
+                }
+            )
+
+        app = web.Application()
+        app.router.add_post("/chat/completions", handler)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                data_dir = Path(temp)
+                (data_dir / "member_aliases.json").write_text(
+                    '{"aliases": {"某憨不憨": "某甲"},'
+                    ' "call_as": {"某甲": ["小甲"]}}',
+                    encoding="utf-8",
+                )
+                settings = Settings(
+                    app_id="app",
+                    app_secret="secret",
+                    ai_api_key="test-key",
+                    ai_base_url=f"http://127.0.0.1:{port}",
+                    ai_model="chat-model",
+                    ai_enabled=True,
+                    ai_timeout=5,
+                    data_dir=data_dir,
+                )
+                async with aiohttp.ClientSession() as session:
+                    client = AIClient(settings, session)
+                    reply = await client.chat("你好")
+        finally:
+            await runner.cleanup()
+
+        self.assertEqual(reply, "小甲刚才说的")
+        self.assertNotIn("某甲", reply)
 
 
 if __name__ == "__main__":

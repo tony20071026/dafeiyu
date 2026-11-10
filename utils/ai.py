@@ -7,6 +7,7 @@ import base64
 import json
 import logging
 import mimetypes
+import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -124,20 +125,154 @@ def load_group_context(path: Path, limit: int = 2_000) -> str:
     return "\n".join(lines)[:limit]
 
 
-def build_member_alias_directive(aliases: dict[str, str]) -> str:
-    """Build the system-prompt block that prefers real names."""
+def load_call_as(path: Path) -> dict[str, list[str]]:
+    """Read the local preferred-name map from ``member_aliases.json``.
 
-    if not aliases:
+    The optional ``call_as`` object maps a person's canonical (real) name to
+    the nicknames the group actually uses, e.g. ``{"黎志程": ["PP"]}``.
+    """
+
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    raw = data.get("call_as") if isinstance(data, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    call_as: dict[str, list[str]] = {}
+    for name, value in raw.items():
+        if not isinstance(name, str) or not name.strip():
+            continue
+        if isinstance(value, str):
+            candidates = [value]
+        elif isinstance(value, list):
+            candidates = [item for item in value if isinstance(item, str)]
+        else:
+            continue
+        names = [item.strip() for item in candidates if item.strip()]
+        if names:
+            call_as[name.strip()] = names
+    return call_as
+
+
+def build_member_alias_directive(
+    aliases: dict[str, str],
+    call_as: dict[str, list[str]] | None = None,
+) -> str:
+    """Build the system-prompt block for names and preferred nicknames."""
+
+    call_as = call_as or {}
+    if not aliases and not call_as:
         return ""
-    lines = [
-        "【称呼】",
-        "- 称呼群友时优先使用已知真名，不要用网名或单字简称。",
-        "- 只有不知道真名、或对方明确要求用网名时，才使用网名；不要自行猜测。",
-        "- 已知昵称与真名的对应关系：",
-    ]
-    for nickname, real_name in sorted(aliases.items()):
-        lines.append(f"  · {nickname} -> {real_name}")
+    lines = ["【称呼】"]
+    if call_as:
+        lines.append(
+            "- 下面这些人有固定叫法：称呼或提到他们时只用这个叫法，"
+            "不要用全名："
+        )
+        for name, names in sorted(call_as.items()):
+            hint = "" if len(names) == 1 else "（任选一个，不要两个一起念）"
+            lines.append(f"  · {name} -> {' / '.join(names)}{hint}")
+        lines.append(
+            "- 任何时候都不要写出这些人的全名，包括解释“这句话是谁说的”、"
+            "复述别人的称呼、列举群成员时；全名只用来对上是哪个人。"
+        )
+    lines.append("- 称呼其他群友时优先使用已知真名，不要用网名或单字简称。")
+    lines.append(
+        "- 只有不知道真名、或对方明确要求用网名时，才使用网名；不要自行猜测。"
+    )
+    if aliases:
+        lines.append("- 已知昵称与真名的对应关系：")
+        for nickname, real_name in sorted(aliases.items()):
+            suffix = ""
+            if real_name in call_as:
+                suffix = f"（叫 {'/'.join(call_as[real_name])}）"
+            lines.append(f"  · {nickname} -> {real_name}{suffix}")
     return "\n".join(lines)
+
+
+# Matches ``名字（名字）`` / ``名字(批批)`` so duplicated annotations can be
+# collapsed after the real name has been rewritten to the preferred nickname.
+_DISPLAY_PAREN_LIMIT = 12
+
+
+class DisplayNames:
+    """Rewrite forbidden full names in outgoing text to preferred nicknames.
+
+    The prompt already asks the model never to print a full name, but live
+    replies still occasionally produced ``黎志程（PP）``.  This is the final
+    safety net: it only touches text the bot is about to send.
+    """
+
+    __slots__ = ("forbidden", "variants", "_pattern")
+
+    def __init__(
+        self,
+        forbidden: dict[str, str],
+        variants: dict[str, tuple[str, ...]],
+    ) -> None:
+        self.forbidden = forbidden
+        self.variants = variants
+        if variants:
+            names = sorted(variants, key=len, reverse=True)
+            alternatives = "|".join(re.escape(name) for name in names)
+            self._pattern = re.compile(
+                rf"(?P<name>{alternatives})\s*[（(]\s*"
+                rf"(?P<inner>[^（）()]{{1,{_DISPLAY_PAREN_LIMIT}}})\s*[）)]"
+            )
+        else:
+            self._pattern = None
+
+    @classmethod
+    def build(
+        cls,
+        aliases: dict[str, str],
+        call_as: dict[str, list[str]],
+    ) -> "DisplayNames":
+        forbidden: dict[str, str] = {}
+        variants: dict[str, tuple[str, ...]] = {}
+        for real_name, preferred in call_as.items():
+            display = preferred[0] if preferred else ""
+            if not display:
+                continue
+            forbidden[real_name] = display
+            merged = list(dict.fromkeys([display, *preferred]))
+            variants[display] = tuple(merged)
+            for nickname, target in aliases.items():
+                if target == real_name and len(nickname) >= 2:
+                    forbidden[nickname] = display
+        return cls(forbidden, variants)
+
+    def apply(self, text: str) -> str:
+        if not text or not self.forbidden:
+            return text
+        for name in sorted(self.forbidden, key=len, reverse=True):
+            text = text.replace(name, self.forbidden[name])
+        return self._collapse(text)
+
+    def _collapse(self, text: str) -> str:
+        if self._pattern is None:
+            return text
+
+        def replace(match: re.Match[str]) -> str:
+            name = match.group("name")
+            allowed = self.variants.get(name)
+            if not allowed:
+                return match.group(0)
+            parts = [
+                part.strip()
+                for part in re.split(r"[/、,，]\s*", match.group("inner"))
+                if part.strip()
+            ]
+            if parts and all(part in allowed for part in parts):
+                return name
+            return match.group(0)
+
+        previous = None
+        while previous != text:
+            previous = text
+            text = self._pattern.sub(replace, text)
+        return text
 
 
 class AIError(RuntimeError):
@@ -178,11 +313,13 @@ class AIClient:
             self._system_prompt = (
                 f"{self._system_prompt}\n\n【补充背景】\n{context}"
             )
-        directive = build_member_alias_directive(
-            load_member_aliases(settings.data_dir / "member_aliases.json")
-        )
+        alias_path = settings.data_dir / "member_aliases.json"
+        aliases = load_member_aliases(alias_path)
+        call_as = load_call_as(alias_path)
+        directive = build_member_alias_directive(aliases, call_as)
         if directive:
             self._system_prompt = f"{self._system_prompt}\n\n{directive}"
+        self._display_names = DisplayNames.build(aliases, call_as)
 
     async def chat(
         self,
@@ -238,12 +375,14 @@ class AIClient:
             {"role": "system", "content": system_content},
             {"role": "user", "content": user_content},
         ]
-        return await self._complete(
-            messages,
-            model=self._settings.ai_model,
-            max_tokens=self._settings.ai_max_tokens,
-            temperature=self._settings.ai_temperature,
-            purpose="对话",
+        return self._display_names.apply(
+            await self._complete(
+                messages,
+                model=self._settings.ai_model,
+                max_tokens=self._settings.ai_max_tokens,
+                temperature=self._settings.ai_temperature,
+                purpose="对话",
+            )
         )
 
     async def interject(
